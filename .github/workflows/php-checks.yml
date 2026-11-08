@@ -1,0 +1,19 @@
+name: PHP checks
+on:
+  push:
+  pull_request:
+jobs:
+  php:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurar PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, curl, openssl, pdo_mysql
+          coverage: none
+      - name: Verificar sintaxe PHP
+        run: find . -type f -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
+      - name: Testes de datas, segurança e conversão
+        run: php tests/smoke.php
