@@ -152,6 +152,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('ok','Operação registrada. Se a fechadura estiver offline, a revogação física pode estar pendente.');
             go('keys');
         }
+        if ($action === 'key_physical_confirm') {
+            $id=(int)($_POST['key_row_id']??0);
+            if ((string)($_POST['confirmation']??'')!=='TESTADO') {
+                throw new InvalidArgumentException('Digite TESTADO apenas depois de verificar presencialmente o estado da fechadura.');
+            }
+            $key=load_key($id);
+            if (!$key || $key['state']==='failed') throw new InvalidArgumentException('eKey não pode ser confirmada.');
+            sql_exec('UPDATE ekeys SET sync_state=? WHERE id=?',['confirmed',$id]);
+            audit_event('key.physical_confirmation','operator_attestation',(int)$key['reservation_id'],(int)$key['lock_id'],$key['key_id']?(int)$key['key_id']:null,'Operador declarou teste físico presencial; não é atestado pela API.');
+            flash('ok','Confirmação MANUAL de teste físico registrada na auditoria.');
+            go('keys');
+        }
         if ($action === 'key_consult') {
             $id=(int)($_POST['key_row_id']??0);
             $key=load_key($id);
@@ -173,6 +185,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $id=(int)($_POST['lock_id']??0);
             $lock=sql_one('SELECT * FROM locks WHERE id=?',[$id]);
             if (!$lock) throw new InvalidArgumentException('Fechadura não encontrada.');
+            if ((string)($_POST['execution']??'simulate')==='real' && !is_live_allowed($lock)) {
+                throw new InvalidArgumentException('Listagem REMOTA bloqueada: apenas lockId de bancada explicitamente habilitado.');
+            }
             if (is_live_allowed($lock) && (string)($_POST['execution']??'simulate')==='real') {
                 $items=(new TTLockClient())->listKeys((int)$lock['ttlock_id'],$id);
                 $rows=[];
@@ -219,6 +234,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         throw new InvalidArgumentException('Ação desconhecida.');
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
+        if (($action ?? '')==='key_mutate' && !empty($key) && !(bool)$key['simulated']) {
+            try {
+                sql_exec('UPDATE ekeys SET sync_state=? WHERE id=?',['unknown',(int)$key['id']]);
+                sql_exec('UPDATE reservations SET needs_review=1 WHERE id=?',[(int)$key['reservation_id']]);
+                audit_event('key.'.(string)($verb??'change'),'needs_review',(int)$key['reservation_id'],(int)$key['lock_id'],$key['key_id']?(int)$key['key_id']:null,'Resultado de operação remota incerto; conferir antes de agir.');
+            } catch (Throwable) {}
+        }
         if (($action ?? '')==='issue_key' && !empty($real) && !empty($resId) && !empty($row)) {
             // Resposta incerta de envio não é reexecutada automaticamente.
             try {
@@ -286,7 +308,7 @@ $quota=quota_data();
     $recent=sql_all('SELECT r.code,r.guest_name,l.room,r.checkin_utc,r.checkout_utc,r.status,e.state AS key_state,e.simulated FROM reservations r JOIN locks l ON l.id=r.lock_id LEFT JOIN ekeys e ON e.reservation_id=r.id ORDER BY r.created_at DESC LIMIT 10');
 ?>
 <div class="metric-grid">
-<?php foreach ([['Reservas próximas',$upcoming],['eKeys válidas agora',$active],['Aguardando emissão',$pending],['eKeys expiradas',$expired],['Revogação pendente',$revocations],['Chamadas API no mês',$quota['used']]] as $m): ?>
+<?php foreach ([['Reservas próximas',$upcoming],['eKeys válidas agora (incl. simuladas)',$active],['Aguardando emissão',$pending],['eKeys expiradas',$expired],['Revogação pendente',$revocations],['Chamadas API no mês',$quota['used']]] as $m): ?>
 <div class="metric"><span><?=h($m[0])?></span><strong><?=h($m[1])?></strong></div><?php endforeach; ?></div>
 <div class="panel"><div class="panel-head"><div><h2>Consumo TTLock</h2><p>Cota configurável, contabilizada por tentativa de chamada registrada.</p></div><strong><?=h($quota['used'])?> / <?=h($quota['max'])?></strong></div>
 <progress max="100" value="<?=h(min(100,$quota['pct']))?>"></progress><p class="muted"><?=h($quota['pct'])?>% do limite mensal.
@@ -353,6 +375,9 @@ $quota=quota_data();
 <td><span class="tag"><?=h($k['state'])?></span><small class="table-note">Sync: <?=h($k['sync_state'])?></small></td><td><?= $k['simulated']?'<span class="tag">SIMULADA</span>':'<span class="tag warning">REAL</span>' ?></td>
 <td><details><summary>Operações</summary><div class="action-stack">
 <form method="post"><?php field_csrf(); ?><input type="hidden" name="action" value="key_consult"><input type="hidden" name="key_row_id" value="<?=h($k['id'])?>"><input type="hidden" name="back" value="keys"><button class="btn subtle" type="submit">Consultar nuvem/local</button></form>
+<?php if ($k['state']!=='failed' && $k['sync_state']!=='confirmed'): ?>
+<form method="post" class="stack"><?php field_csrf(); ?><input type="hidden" name="action" value="key_physical_confirm"><input type="hidden" name="key_row_id" value="<?=h($k['id'])?>"><input type="hidden" name="back" value="keys"><label>Confirmar teste físico presencial (não automático)<input name="confirmation" required placeholder="Digite TESTADO após verificar"></label><button class="btn subtle" type="submit">Registrar verificação física</button></form>
+<?php endif; ?>
 <?php if (!in_array($k['state'],['deleted','failed'],true)): ?>
 <?php foreach (['freeze'=>'Congelar','unfreeze'=>'Descongelar','delete'=>'Apagar'] as $verb=>$label): if (($verb==='freeze'&&$k['state']!=='issued')||($verb==='unfreeze'&&$k['state']!=='frozen')) continue; ?>
 <form method="post" class="stack"><?php field_csrf(); ?><input type="hidden" name="action" value="key_mutate"><input type="hidden" name="verb" value="<?=h($verb)?>"><input type="hidden" name="key_row_id" value="<?=h($k['id'])?>"><input type="hidden" name="back" value="keys"><label><?=h($label)?> — digite CONFIRMAR<input name="confirmation" required placeholder="CONFIRMAR"></label><button class="btn <?=$verb==='delete'?'danger':'subtle'?>" type="submit"><?=h($label)?></button></form>
@@ -381,7 +406,7 @@ $quota=quota_data();
 <div class="panel"><h2>Política de uso da API</h2><form method="post" class="form-grid"><?php field_csrf(); ?><input type="hidden" name="action" value="settings_save"><input type="hidden" name="back" value="settings"><label>Cota mensal de referência<input name="monthly_quota" type="number" min="100" max="100000000" value="<?=h($quota['max'])?>" required></label><div><p>Alertas automáticos visuais aos 80%, 90% e 100%. Sem polling frequente.</p><button class="btn primary" type="submit">Salvar cota</button></div></form></div>
 <div class="panel"><h2>Modo de execução</h2><p>O padrão é simulação. Para leituras e escritas de bancada, edite a configuração privada no servidor, configure <code>ttlock_bench_lock_id</code>, defina <code>ttlock_live_enabled=true</code> e confirme cada ação real explicitamente. Não existe interruptor pelo navegador que libere fechaduras de produção.</p></div>
 <div class="panel"><h2>Integração de reservas HFVM</h2><p>Webhook autenticado: <code>POST api.php?route=reservation</code>. Considere assinatura HMAC, idempotência por <code>event_id</code>, fuso e mapeamento único do quarto. O endpoint <code>api.php?route=guest-key</code> exige token HMAC curto por reserva, mas não libera credencial Bluetooth sem validação da identidade receptora.</p>
-<p><a href="README.md">Documentação e exemplos no README</a></p></div>
+<p><a href="https://github.com/wfuzatto/ttlock_ekey_dashboard#readme" target="_blank" rel="noopener noreferrer">Documentação e exemplos no GitHub</a></p></div>
 <?php endif; ?>
 <footer class="footer">TTLock eKeys Dashboard · Dados e operações classificados como simulados ou reais · Nenhum segredo é enviado para o navegador.</footer>
 </main></div></body></html>
