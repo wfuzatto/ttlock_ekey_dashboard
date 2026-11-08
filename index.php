@@ -218,7 +218,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $bench=(int)config('ttlock_bench_lock_id',0);
                 if ($bench<=0) throw new InvalidArgumentException('Configure lockId da bancada antes do diagnóstico remoto.');
                 $data=(new TTLockClient())->diagnostics($bench);
-                $report['Acesso TTLock'=>'Autenticado: '.(int)$data['visible'].' fechaduras na primeira página; bancada '.($data['bench_found']?'encontrada':'NÃO encontrada');
+                $report['Acesso TTLock']='Autenticado: '.(int)$data['visible'].' fechaduras na primeira página; bancada '.($data['bench_found']?'encontrada':'NÃO encontrada');
                 audit_event('integration.diagnose','read_only',null,null,null,'Leitura sem escrita.');
             }
             $_SESSION['diagnostics']=$report;
