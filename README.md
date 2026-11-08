@@ -46,7 +46,7 @@ O código solicita OAuth2 com conta administradora via `/oauth2/token`, fornece 
 - **Sobreposição:** bloqueio por reserva/fechadura quando os intervalos se cruzam (ignorando reservas canceladas e com checkout concluído). Administrador pode digitar `SOBREPOR` como autorização explícita; a exceção aparece na auditoria.
 - **Destinatário:** a conta emissora não pode receber a própria eKey. Se o mesmo destinatário já tiver uma eKey ativa registrada para a mesma fechadura, o sistema impede novo envio, pois a TTLock substituiria a anterior. O fluxo exige **conta TTLock/Sciener já existente do hóspede**. Não usa `createUser=1`, que criaria senha fraca; contas técnicas por reserva estão desativadas até validação real.
 - **Operações:** consultar o estado na base local ou lista de eKeys comuns da TTLock (`/v3/lock/listKey`); congelar (`/v3/key/freeze`), descongelar (`/v3/key/unfreeze`) e apagar (`/v3/key/delete`) somente mediante `CONFIRMAR`. Escritas reais limitadas à bancada; se houver timeout, **não há retry automático do envio** e o registro fica em revisão para evitar duplicidade.
-- **Painel:** cartões de reservas próximas, válidas agora (inclui simulações), pendências, expiradas, revogações sem confirmação física e chamadas mensais; alertas visuais aos 80%, 90% e 100% da cota configurável.
+- **Painel:** cartões de reservas próximas, válidas agora (inclui simulações), pendências, expiradas, revogações sem confirmação física e chamadas mensais; alertas visuais configuráveis (inicialmente em 80%, 90% e 100%) da cota configurável.
 - **Auditoria:** registra ação, usuário, reserva, fechadura, `keyId`, estado, instante e resultado sanitizado. Exportação CSV não contém senha, token, `lockData` ou chave criptográfica.
 
 ### CSV de reservas
