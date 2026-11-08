@@ -189,7 +189,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new InvalidArgumentException('Listagem REMOTA bloqueada: apenas lockId de bancada explicitamente habilitado.');
             }
             if (is_live_allowed($lock) && (string)($_POST['execution']??'simulate')==='real') {
-                $items=(new TTLockClient())->listKeys((int)$lock['ttlock_id'],$id);
+                $pageNo=max(1,min(1000,(int)($_POST['page_no']??1)));
+                $items=(new TTLockClient())->listKeys((int)$lock['ttlock_id'],$id,$pageNo);
                 $rows=[];
                 foreach ($items as $item) $rows[]=[
                     'key_id'=>$item['keyId'], 'receiver'=>$item['username'], 'state'=>$item['status'],
@@ -227,7 +228,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($action === 'settings_save') {
             $quota=filter_var($_POST['monthly_quota']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>100,'max_range'=>100000000]]);
             if (!$quota) throw new InvalidArgumentException('Cota mensal inválida.');
-            sql_exec("INSERT INTO settings (name,value) VALUES ('monthly_quota',?) ON DUPLICATE KEY UPDATE value=VALUES(value)",[(string)$quota]);
+            $a80=filter_var($_POST['alert_80']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>1,'max_range'=>98]]);
+            $a90=filter_var($_POST['alert_90']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>2,'max_range'=>99]]);
+            $a100=filter_var($_POST['alert_100']??null,FILTER_VALIDATE_INT,['options'=>['min_range'=>3,'max_range'=>100]]);
+            if (!$a80 || !$a90 || !$a100 || !($a80<$a90 && $a90<$a100)) {
+                throw new InvalidArgumentException('Alertas precisam estar em ordem crescente (por exemplo, 80/90/100).');
+            }
+            foreach (['monthly_quota'=>$quota,'alert_80'=>$a80,'alert_90'=>$a90,'alert_100'=>$a100] as $name=>$value) {
+                sql_exec('INSERT INTO settings (name,value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)',[$name,(string)$value]);
+            }
             audit_event('settings.quota','ok',null,null,null,'Cota modificada');
             flash('ok','Cota mensal atualizada.'); go('settings');
         }
@@ -312,9 +321,9 @@ $quota=quota_data();
 <div class="metric"><span><?=h($m[0])?></span><strong><?=h($m[1])?></strong></div><?php endforeach; ?></div>
 <div class="panel"><div class="panel-head"><div><h2>Consumo TTLock</h2><p>Cota configurável, contabilizada por tentativa de chamada registrada.</p></div><strong><?=h($quota['used'])?> / <?=h($quota['max'])?></strong></div>
 <progress max="100" value="<?=h(min(100,$quota['pct']))?>"></progress><p class="muted"><?=h($quota['pct'])?>% do limite mensal.
-<?php if ($quota['pct']>=100): ?>Limite de referência atingido.
-<?php elseif ($quota['pct']>=90): ?>Alerta de 90%.
-<?php elseif ($quota['pct']>=80): ?>Alerta de 80%.<?php endif; ?></p></div>
+<?php if ($quota['pct'] >= (int)setting('alert_100','100')): ?>Limite de referência atingido.
+<?php elseif ($quota['pct'] >= (int)setting('alert_90','90')): ?>Alerta de <?=h(setting('alert_90','90'))?>%.
+<?php elseif ($quota['pct'] >= (int)setting('alert_80','80')): ?>Alerta de <?=h(setting('alert_80','80'))?>%.<?php endif; ?></p></div>
 <div class="panel"><div class="panel-head"><h2>Últimas reservas</h2><a class="btn subtle" href="index.php?page=reservations">Ver reservas</a></div>
 <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Hóspede</th><th>Quarto</th><th>Check-in</th><th>Checkout</th><th>eKey</th></tr></thead><tbody>
 <?php foreach ($recent as $r): ?><tr><td><?=h($r['code'])?></td><td><?=h($r['guest_name'])?></td><td><?=h($r['room'])?></td><td><?=h(local_date($r['checkin_utc']))?></td><td><?=h(local_date($r['checkout_utc']))?></td><td><?=h($r['key_state']??'pendente')?><?=isset($r['simulated'])&&$r['simulated']?' · sim.':''?></td></tr><?php endforeach; ?>
@@ -328,7 +337,7 @@ $quota=quota_data();
 <label>Nome<input name="label" value="<?=h($l['label'])?>" required></label><label>Quarto<input name="room" value="<?=h($l['room'])?>" required></label><label>lockId<input name="ttlock_id" inputmode="numeric" value="<?=h($l['ttlock_id'])?>"></label><label>MAC<input name="mac" value="<?=h($l['mac'])?>"></label>
 <label>Modo<select name="mode"><?php foreach (['simulation','bench','production'] as $m): ?><option value="<?=h($m)?>" <?=$m===$l['mode']?'selected':''?>><?=h($m)?></option><?php endforeach; ?></select></label><label>Status<select name="status"><?php foreach (['active','inactive'] as $m): ?><option value="<?=h($m)?>" <?=$m===$l['status']?'selected':''?>><?=h($m)?></option><?php endforeach; ?></select></label><button class="btn" type="submit">Salvar alterações</button></form>
 <form method="post" class="stack"><?php field_csrf(); ?><input type="hidden" name="action" value="lock_list"><input type="hidden" name="lock_id" value="<?=h($l['id'])?>"><input type="hidden" name="back" value="locks">
-<label>Listagem<select name="execution"><option value="simulate">Base local</option><option value="real">Nuvem TTLock (somente bancada autorizada)</option></select></label><button class="btn subtle" type="submit">Listar eKeys</button></form></details></td></tr><?php endforeach; ?>
+<label>Listagem<select name="execution"><option value="simulate">Base local</option><option value="real">Nuvem TTLock (somente bancada autorizada)</option></select></label><label>Página da lista da nuvem<input type="number" name="page_no" min="1" max="1000" value="1"></label><button class="btn subtle" type="submit">Listar eKeys</button></form></details></td></tr><?php endforeach; ?>
 <?php if (!$locks): ?><tr><td colspan="6" class="empty">Nenhuma fechadura cadastrada.</td></tr><?php endif; ?></tbody></table></div></div>
 <div class="panel"><h2>Adicionar fechadura</h2><form method="post" class="form-grid"><?php field_csrf(); ?><input type="hidden" name="action" value="add_lock"><input type="hidden" name="back" value="locks">
 <label>Nome da fechadura<input name="label" placeholder="Saga 203" required></label><label>Quarto<input name="room" placeholder="203" required></label><label>lockId TTLock<input name="ttlock_id" inputmode="numeric" placeholder="Opcional na simulação"></label><label>MAC Bluetooth<input name="mac" placeholder="Opcional"></label>
@@ -355,9 +364,18 @@ $quota=quota_data();
     $keyReservations=sql_all("SELECT r.id,r.code,l.room,r.checkin_utc,r.checkout_utc,r.receiver_username FROM reservations r JOIN locks l ON l.id=r.lock_id LEFT JOIN ekeys e ON e.reservation_id=r.id WHERE e.id IS NULL AND r.status IN ('confirmed','checked_in') ORDER BY r.checkin_utc LIMIT 100");
     $search=substr(trim((string)($_GET['q']??'')),0,100);
     $filter=(string)($_GET['status']??'');
+    $dateFrom=(string)($_GET['date_from']??'');
+    $dateTo=(string)($_GET['date_to']??'');
     $args=[]; $where=' WHERE 1=1';
     if ($search!=='') { $where.=" AND (r.code LIKE ? OR l.room LIKE ? OR e.receiver_username LIKE ?)";$like='%'.$search.'%';$args=[$like,$like,$like]; }
     if (in_array($filter,['issued','frozen','deleted','failed'],true)) { $where.=' AND e.state=?'; $args[]=$filter; }
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/',$dateFrom)) {
+        $where.=' AND e.valid_until_utc >= ?'; $args[]=utc_date($dateFrom.'T00:00');
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/',$dateTo)) {
+        $end=(new DateTimeImmutable($dateTo,new DateTimeZone('America/Sao_Paulo')))->modify('+1 day')->format('Y-m-d');
+        $where.=' AND e.valid_from_utc < ?'; $args[]=utc_date($end.'T00:00');
+    }
     $keys=sql_all('SELECT e.*,r.code,r.guest_name,l.room,l.mode FROM ekeys e JOIN reservations r ON r.id=e.reservation_id JOIN locks l ON l.id=e.lock_id'.$where.' ORDER BY e.id DESC LIMIT 200',$args);
 ?>
 <div class="panel"><h2>Emitir eKey temporária</h2><p>Identidade destinatária: conta TTLock existente por hóspede. O cadastro técnico automático está desativado. Cada eKey recebe a validade integral de check-in/checkout.</p>
@@ -367,7 +385,7 @@ $quota=quota_data();
 <label>Confirmação de escrita real<input name="confirmation" placeholder="Digite EMITIR só para operação real"></label>
 <label>Exceção de sobreposição<input name="overlap_confirmation" placeholder="SOBREPOR somente se autorizado"></label>
 <div class="wide"><button class="btn primary" type="submit">Emitir eKey</button><p class="footnote">Não envia chaves para a conta administradora nem registra senhas de hóspedes.</p></div></form></div>
-<div class="panel"><div class="panel-head"><h2>eKeys registradas</h2><form method="get" class="inline-form"><input type="hidden" name="page" value="keys"><input name="q" value="<?=h($search)?>" placeholder="Reserva, quarto ou destinatário"><select name="status"><option value="">Todos os estados</option><?php foreach (['issued','frozen','deleted','failed'] as $s): ?><option value="<?=h($s)?>" <?=$filter===$s?'selected':''?>><?=h($s)?></option><?php endforeach; ?></select><button type="submit" class="btn subtle">Filtrar</button></form></div>
+<div class="panel"><div class="panel-head"><h2>eKeys registradas</h2><form method="get" class="inline-form"><input type="hidden" name="page" value="keys"><input name="q" value="<?=h($search)?>" placeholder="Reserva, quarto ou destinatário"><select name="status"><option value="">Todos os estados</option><?php foreach (['issued','frozen','deleted','failed'] as $s): ?><option value="<?=h($s)?>" <?=$filter===$s?'selected':''?>><?=h($s)?></option><?php endforeach; ?></select><label>De<input type="date" name="date_from" value="<?=h($dateFrom)?>"></label><label>Até<input type="date" name="date_to" value="<?=h($dateTo)?>"></label><button type="submit" class="btn subtle">Filtrar</button></form></div>
 <div class="table-wrap"><table><thead><tr><th>Reserva</th><th>Quarto</th><th>Destinatário</th><th>Validade</th><th>keyId</th><th>Estado</th><th>Origem</th><th>Ações</th></tr></thead><tbody>
 <?php foreach ($keys as $k): ?><tr>
 <td><?=h($k['code'])?></td><td><?=h($k['room'])?></td><td><?=h($k['receiver_username'])?></td>
@@ -403,7 +421,11 @@ $quota=quota_data();
 <div class="panel"><h2>Fluxo bloqueado até validação</h2><p>O endpoint do HFVM exige identidade da reserva assinada pelo backend e aplica proteção anti-replay, mas <strong>não entrega lockData de administrador ao hóspede</strong>. O fluxo para obter a eKey da conta receptora via SDK Android TTLock precisa ser validado na fechadura Saga de bancada. Cadastro automático de contas técnicas permanece desativado.</p></div>
 
 <?php elseif ($page==='settings'): ?>
-<div class="panel"><h2>Política de uso da API</h2><form method="post" class="form-grid"><?php field_csrf(); ?><input type="hidden" name="action" value="settings_save"><input type="hidden" name="back" value="settings"><label>Cota mensal de referência<input name="monthly_quota" type="number" min="100" max="100000000" value="<?=h($quota['max'])?>" required></label><div><p>Alertas automáticos visuais aos 80%, 90% e 100%. Sem polling frequente.</p><button class="btn primary" type="submit">Salvar cota</button></div></form></div>
+<div class="panel"><h2>Política de uso da API</h2><form method="post" class="form-grid"><?php field_csrf(); ?><input type="hidden" name="action" value="settings_save"><input type="hidden" name="back" value="settings"><label>Cota mensal de referência<input name="monthly_quota" type="number" min="100" max="100000000" value="<?=h($quota['max'])?>" required></label>
+<label>Alerta inicial (%)<input name="alert_80" type="number" min="1" max="98" value="<?=h(setting('alert_80','80'))?>" required></label>
+<label>Alerta intermediário (%)<input name="alert_90" type="number" min="2" max="99" value="<?=h(setting('alert_90','90'))?>" required></label>
+<label>Alerta crítico (%)<input name="alert_100" type="number" min="3" max="100" value="<?=h(setting('alert_100','100'))?>" required></label>
+<div><p>Alertas visuais configuráveis, sem polling.</p><button class="btn primary" type="submit">Salvar política de uso</button></div></form></div>
 <div class="panel"><h2>Modo de execução</h2><p>O padrão é simulação. Para leituras e escritas de bancada, edite a configuração privada no servidor, configure <code>ttlock_bench_lock_id</code>, defina <code>ttlock_live_enabled=true</code> e confirme cada ação real explicitamente. Não existe interruptor pelo navegador que libere fechaduras de produção.</p></div>
 <div class="panel"><h2>Integração de reservas HFVM</h2><p>Webhook autenticado: <code>POST api.php?route=reservation</code>. Considere assinatura HMAC, idempotência por <code>event_id</code>, fuso e mapeamento único do quarto. O endpoint <code>api.php?route=guest-key</code> exige token HMAC curto por reserva, mas não libera credencial Bluetooth sem validação da identidade receptora.</p>
 <p><a href="https://github.com/wfuzatto/ttlock_ekey_dashboard#readme" target="_blank" rel="noopener noreferrer">Documentação e exemplos no GitHub</a></p></div>
