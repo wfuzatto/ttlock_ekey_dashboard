@@ -20,4 +20,5 @@ $threw=false;
 try { utc_date('2026-02-30T12:30'); } catch (InvalidArgumentException) { $threw=true; }
 ok($threw,'data impossível bloqueada');
 ok(h('<script>')==='&lt;script&gt;','escape HTML');
+ok(authorization_header_value([],['Authorization'=>'Bearer local-test'])==='Bearer local-test','Authorization header fallback for Apache');
 echo 'Smoke test concluído sem banco e sem chamadas TTLock.'.PHP_EOL;

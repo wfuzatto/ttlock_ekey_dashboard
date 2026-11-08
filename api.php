@@ -57,7 +57,10 @@ try {
     if ($route === 'guest-key') {
         $secret = (string) config('hfvm_signing_key','');
         if (strlen($secret) < 32) json_response(['error'=>'hfvm_integration_not_configured'],503);
-        $authorization = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+        $authorization = authorization_header_value(
+            $_SERVER,
+            function_exists('getallheaders') ? getallheaders() : []
+        );
         if (!preg_match('/^Bearer ([A-Za-z0-9_-]+)\.([a-f0-9]{64})$/i',$authorization,$m)) json_response(['error'=>'unauthorized'],401);
         $payload = $m[1]; $provided = strtolower($m[2]);
         if (!hash_equals(hash_hmac('sha256',$payload,$secret),$provided)) json_response(['error'=>'unauthorized'],401);

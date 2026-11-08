@@ -2,6 +2,16 @@
 declare(strict_types=1);
 
 function h(mixed $value): string { return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
+function authorization_header_value(array $server, array $headers = []): string {
+    foreach (['HTTP_AUTHORIZATION', 'REDIRECT_HTTP_AUTHORIZATION'] as $name) {
+        $value = trim((string)($server[$name] ?? ''));
+        if ($value !== '') return $value;
+    }
+    foreach ($headers as $name => $value) {
+        if (strcasecmp((string)$name, 'Authorization') === 0) return trim((string)$value);
+    }
+    return '';
+}
 function ms_now(): int { return (int) round(microtime(true) * 1000); }
 function utc_now(): string { return gmdate('Y-m-d H:i:s'); }
 function sql_one(string $sql, array $params = []): ?array {
