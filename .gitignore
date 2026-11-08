@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+config.local.php
+config.private.php
+ttlock_ekey_config.php
+/storage/*
+!/storage/.htaccess
+*.log
+*.sql.gz
+*.sql.zip
+*.bak
+/.idea/
+/.vscode/
+.DS_Store
