@@ -22,7 +22,7 @@ final class TTLockClient {
         if (!$this->clientId || !$this->clientSecret) throw new RuntimeException('Credenciais TTLock não configuradas.');
         if (!extension_loaded('curl')) throw new RuntimeException('Extensão PHP cURL indisponível.');
     }
-    private function raw(string $path, array $args, string $method, ?int $lockRowId = null): array {
+    private function raw(string $path, array $args, string $method, ?int $lockRowId = null, ?callable $onRequestStarted = null): array {
         $url = $this->base . $path;
         $query = http_build_query($args, '', '&', PHP_QUERY_RFC3986);
         $ch = curl_init();
@@ -41,6 +41,7 @@ final class TTLockClient {
             $options[CURLOPT_POSTFIELDS] = $query;
         }
         curl_setopt_array($ch,$options);
+        if ($onRequestStarted !== null) $onRequestStarted();
         $body = curl_exec($ch);
         $http = (int) curl_getinfo($ch,CURLINFO_HTTP_CODE);
         $failed = ($body === false) || $http < 200 || $http >= 300;
@@ -95,23 +96,23 @@ final class TTLockClient {
             [$access,$refresh,$until]);
         return (string)$response['access_token'];
     }
-    public function call(string $path,array $params=[],string $method='GET',?int $lockRowId=null): array {
+    public function call(string $path,array $params=[],string $method='GET',?int $lockRowId=null,?callable $onRequestStarted=null): array {
         $params = ['clientId'=>$this->clientId,'accessToken'=>$this->token(),'date'=>ms_now()] + $params;
-        return $this->raw($path,$params,$method,$lockRowId);
+        return $this->raw($path,$params,$method,$lockRowId,$onRequestStarted);
     }
-    public function send(int $ttlockId,string $receiver,string $name,int $startMs,int $endMs,int $rowId): int {
+    public function send(int $ttlockId,string $receiver,string $name,int $startMs,int $endMs,int $rowId,?callable $onRequestStarted=null): int {
         $response = $this->call('/v3/key/send',[
             'lockId'=>$ttlockId, 'receiverUsername'=>$receiver, 'keyName'=>$name,
             'startDate'=>$startMs, 'endDate'=>$endMs, 'remoteEnable'=>2,
             'createUser'=>2
-        ],'POST',$rowId);
+        ],'POST',$rowId,$onRequestStarted);
         if (empty($response['keyId'])) throw new TTLockApiException('MISSING_KEY_ID');
         return (int)$response['keyId'];
     }
-    public function mutate(string $action,int $keyId,int $lockRowId): void {
+    public function mutate(string $action,int $keyId,int $lockRowId,?callable $onRequestStarted=null): void {
         $paths = ['freeze'=>'/v3/key/freeze','unfreeze'=>'/v3/key/unfreeze','delete'=>'/v3/key/delete'];
         if (!isset($paths[$action])) throw new InvalidArgumentException('Ação não permitida.');
-        $this->call($paths[$action], ['keyId'=>$keyId], 'POST', $lockRowId);
+        $this->call($paths[$action], ['keyId'=>$keyId], 'POST', $lockRowId, $onRequestStarted);
     }
     public function listKeys(int $ttlockId,int $rowId,int $pageNo=1): array {
         $reply = $this->call('/v3/lock/listKey',['lockId'=>$ttlockId,'pageNo'=>max(1,min(1000,$pageNo)),'pageSize'=>100],'GET',$rowId);
@@ -131,7 +132,19 @@ final class TTLockClient {
     public function diagnostics(int $benchId): array {
         // Apenas leitura. Não cria, congela nem apaga eKeys.
         $response = $this->call('/v3/lock/list',['pageNo'=>1,'pageSize'=>100],'GET');
-        $ids = array_map(static fn($i)=>(int)($i['lockId'] ?? 0),(array)($response['list'] ?? []));
-        return ['visible'=>count($ids),'bench_found'=>in_array($benchId,$ids,true)];
+        $locks=[];
+        foreach ((array)($response['list'] ?? []) as $item) {
+            if (!is_array($item)) continue;
+            $locks[]=[
+                'lock_id'=>(int)($item['lockId'] ?? 0),
+                'name'=>substr((string)($item['lockName'] ?? ''),0,100),
+                'alias'=>substr((string)($item['lockAlias'] ?? ''),0,100),
+                'mac'=>substr((string)($item['lockMac'] ?? ''),0,32),
+                'battery'=>(int)($item['electricQuantity'] ?? 0),
+                'gateway'=>(int)($item['hasGateway'] ?? 0)===1,
+            ];
+        }
+        $ids = array_column($locks,'lock_id');
+        return ['visible'=>count($ids),'bench_found'=>$benchId>0 && in_array($benchId,$ids,true),'locks'=>$locks];
     }
 }

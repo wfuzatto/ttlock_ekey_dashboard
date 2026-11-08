@@ -22,6 +22,7 @@ function csv_cell(mixed $value): string {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $ttlockWriteRequestStarted = false;
     try {
         check_csrf();
         $action = (string) ($_POST['action'] ?? '');
@@ -114,11 +115,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new InvalidArgumentException('Conflito com reserva(s): '.implode(', ',array_column($overlaps,'code')).'. Digite SOBREPOR para autorizar exceção.');
             }
             if ($real) {
-                if (!is_live_allowed($row) || (string)($_POST['confirmation']??'')!=='EMITIR') {
-                    throw new InvalidArgumentException('Envio real restrito a lockId de bancada configurado; digite EMITIR.');
+                if (!is_live_allowed($row)) {
+                    throw new InvalidArgumentException('Envio real bloqueado: configure o modo real e o lockId exato da fechadura de bancada.');
                 }
-                $keyId=(new TTLockClient())->send((int)$row['ttlock_id'],$row['receiver_username'],
-                    'Reserva '.$row['code'],utc_millis($row['checkin_utc']),utc_millis($row['checkout_utc']),(int)$row['lock_id']);
+                if ((string)($_POST['confirmation']??'')!=='EMITIR') {
+                    throw new InvalidArgumentException('Digite EMITIR para confirmar a escrita na fechadura de bancada.');
+                }
+                $client=new TTLockClient();
+                $keyId=$client->send((int)$row['ttlock_id'],$row['receiver_username'],
+                    'Reserva '.$row['code'],utc_millis($row['checkin_utc']),utc_millis($row['checkout_utc']),(int)$row['lock_id'],
+                    static function() use (&$ttlockWriteRequestStarted): void { $ttlockWriteRequestStarted=true; });
             } else {
                 $keyId=null;
             }
@@ -142,7 +148,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (($verb==='freeze' && $key['state']!=='issued') || ($verb==='unfreeze' && $key['state']!=='frozen')) throw new InvalidArgumentException('Transição de estado não permitida.');
             if (!(bool)$key['simulated']) {
                 if (!is_live_allowed($key) || !$key['key_id']) throw new InvalidArgumentException('Ação real só é permitida na fechadura de bancada.');
-                (new TTLockClient())->mutate($verb,(int)$key['key_id'],(int)$key['lock_id']);
+                $client=new TTLockClient();
+                $client->mutate($verb,(int)$key['key_id'],(int)$key['lock_id'],
+                    static function() use (&$ttlockWriteRequestStarted): void { $ttlockWriteRequestStarted=true; });
             }
             $next=['freeze'=>'frozen','unfreeze'=>'issued','delete'=>'deleted'][$verb];
             sql_exec('UPDATE ekeys SET state=?,sync_state=? WHERE id=?',[$next,'pending',$id]);
@@ -217,9 +225,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             crypt_key();
             if ((string)($_POST['remote_read']??'')==='yes') {
                 $bench=(int)config('ttlock_bench_lock_id',0);
-                if ($bench<=0) throw new InvalidArgumentException('Configure lockId da bancada antes do diagnóstico remoto.');
                 $data=(new TTLockClient())->diagnostics($bench);
-                $report['Acesso TTLock']='Autenticado: '.(int)$data['visible'].' fechaduras na primeira página; bancada '.($data['bench_found']?'encontrada':'NÃO encontrada');
+                $report['Acesso TTLock']='Autenticado: '.(int)$data['visible'].' fechadura(s) na primeira página; '.($bench>0?($data['bench_found']?'bancada encontrada':'bancada não encontrada'):'lockId da bancada ainda não configurado');
+                $report['Fechaduras TTLock']=empty($data['locks'])?'Nenhuma fechadura visível':implode(' | ',array_map(static fn($lock)=>
+                    'lockId '.$lock['lock_id'].' — '.($lock['alias']!==''?$lock['alias']:$lock['name']).' — MAC '.$lock['mac'], $data['locks']));
                 audit_event('integration.diagnose','read_only',null,null,null,'Leitura sem escrita.');
             }
             $_SESSION['diagnostics']=$report;
@@ -243,14 +252,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         throw new InvalidArgumentException('Ação desconhecida.');
     } catch (Throwable $e) {
         if (db()->inTransaction()) db()->rollBack();
-        if (($action ?? '')==='key_mutate' && !empty($key) && !(bool)$key['simulated']) {
+        if (($action ?? '')==='key_mutate' && $ttlockWriteRequestStarted && !empty($key) && !(bool)$key['simulated']) {
             try {
                 sql_exec('UPDATE ekeys SET sync_state=? WHERE id=?',['unknown',(int)$key['id']]);
                 sql_exec('UPDATE reservations SET needs_review=1 WHERE id=?',[(int)$key['reservation_id']]);
                 audit_event('key.'.(string)($verb??'change'),'needs_review',(int)$key['reservation_id'],(int)$key['lock_id'],$key['key_id']?(int)$key['key_id']:null,'Resultado de operação remota incerto; conferir antes de agir.');
             } catch (Throwable) {}
         }
-        if (($action ?? '')==='issue_key' && !empty($real) && !empty($resId) && !empty($row)) {
+        if (($action ?? '')==='issue_key' && $ttlockWriteRequestStarted && !empty($real) && !empty($resId) && !empty($row)) {
             // Resposta incerta de envio não é reexecutada automaticamente.
             try {
                 sql_exec('INSERT IGNORE INTO ekeys (reservation_id,lock_id,receiver_username,valid_from_utc,valid_until_utc,state,simulated,sync_state,last_error_code) VALUES (?,?,?,?,?,?,?,?,?)',
