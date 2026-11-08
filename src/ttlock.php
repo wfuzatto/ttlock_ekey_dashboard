@@ -113,8 +113,8 @@ final class TTLockClient {
         if (!isset($paths[$action])) throw new InvalidArgumentException('Ação não permitida.');
         $this->call($paths[$action], ['keyId'=>$keyId], 'POST', $lockRowId);
     }
-    public function listKeys(int $ttlockId,int $rowId): array {
-        $reply = $this->call('/v3/lock/listKey',['lockId'=>$ttlockId,'pageNo'=>1,'pageSize'=>100],'GET',$rowId);
+    public function listKeys(int $ttlockId,int $rowId,int $pageNo=1): array {
+        $reply = $this->call('/v3/lock/listKey',['lockId'=>$ttlockId,'pageNo'=>max(1,min(1000,$pageNo)),'pageSize'=>100],'GET',$rowId);
         $items = [];
         foreach (array_slice((array)($reply['list'] ?? []),0,100) as $entry) {
             if (!is_array($entry)) continue;
